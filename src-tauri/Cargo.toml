@@ -33,6 +33,10 @@ sha2 = "0.10"
 # Default features are off: `tls` would pull in rustls + ring alongside
 # native-tls, and `gzip` pulls in flate2 — none of which this client needs,
 # since the server sends the manifest and map files uncompressed.
+#
+# With only `native-tls` on, ureq has no *default* TLS engine: every https URL
+# fails with "no TLS backend is configured" unless the agent is handed a
+# connector. `sync::build_agent` does exactly that.
 ureq = { version = "2", default-features = false, features = ["native-tls"] }
 
 tiny_http = "0.12"

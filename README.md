@@ -45,23 +45,39 @@ the same.
 
 ```json
 {
-  "server": "http://your-server:2053",
+  "server": "https://your-domain",
   "accounts": null
 }
 ```
 
 - `server` — the game server (serves `index.html`, `/ws`, `/manifest.json`).
-- `accounts` — account service. `null` (default) means "same host, port 2054".
-  Set `false` to disable sign-in; guests still work.
+  A bare host — `your-domain`, no scheme — is read as `https://your-domain`,
+  because the public server is published behind a TLS edge. Write `http://`
+  only for the local dev server or a LAN host that has no certificate; an edge
+  that only answers https still lifts those with a redirect.
+- `accounts` — account service. `null` (default) means "same host and scheme,
+  port 2054" — `https://your-domain:2054` for an https server. If the account
+  service is published somewhere else (another host, a path on the game
+  origin), set the full URL here; `false` disables sign-in, and guests still
+  work.
 
-`PB2_SERVER` in the environment overrides `server`.
+`PB2_SERVER` in the environment overrides `server`, and is normalized the same
+way.
+
+Certificates are checked against the OS trust store (SChannel on Windows,
+Security.framework on macOS, the system CA bundle on Linux) — there is no
+pinned or bundled root, and no way to skip verification from the config. A
+host whose chain does not validate fails at the update check with the TLS
+error, before anything is written to disk.
 
 ## How it works
 
 1. **Update check.** `GET <server>/manifest.json` returns every file with its
    size and SHA-256. The launcher compares that against the local copy and
    downloads only the files whose hash differs. Files that already match are
-   not touched — a second start transfers nothing.
+   not touched — a second start transfers nothing. An `https://` server is
+   fetched over TLS through the platform stack (ureq + native-tls), so the
+   manifest and every game file are verified against the OS trust store.
 2. **Local copy.** Files land in the platform app-data folder:
    - Windows: `%APPDATA%/com.pb2.launcher/game`
    - macOS: `~/Library/Application Support/com.pb2.launcher/game`
@@ -90,6 +106,13 @@ the same.
    game's own origin-based auto-detect assigns to them in sloppy mode, and
    assigning to a non-writable property is a silent no-op, so the pinned values
    win. The same script pins `__PB2_DEVICE`, the machine identifiers below.
+
+   The scheme travels with the pinned address: the client turns `https://` into
+   `wss://` and `http://` into `ws://` when it opens the socket, so an https
+   server is what puts the multiplayer session on TLS. The page itself stays on
+   `http://localhost`, which the webview already treats as a secure context;
+   only the traffic to the game server is encrypted, and `wss://` from an
+   `http://localhost` page is not blocked as mixed content.
 5. **Machine identifiers.** Before the window exists, the launcher reads what a
    browser cannot: the SMBIOS UUID and BIOS serial (the firmware table on
    Windows, `/sys/class/dmi/id` on Linux, `ioreg` on macOS). They are pinned

@@ -14,12 +14,32 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const STATE_VERSION: u32 = 1;
+
+/// The HTTP client for the update check and the downloads.
+///
+/// `native-tls` is not one of ureq's default engines: with the feature on but
+/// no connector handed to the builder, ureq answers every `https://` URL with
+/// "no TLS backend is configured". Wiring the platform connector here is what
+/// makes https work at all — and it is also what checks the certificate: the
+/// chain and the host name are validated against the OS trust store
+/// (SChannel, Security.framework, the system CA bundle), with no way to turn
+/// that off.
+fn build_agent() -> Result<ureq::Agent, String> {
+    let tls = ureq::native_tls::TlsConnector::new().map_err(|e| format!("TLS: {e}"))?;
+    Ok(ureq::AgentBuilder::new()
+        .tls_connector(Arc::new(tls))
+        .timeout(Duration::from_secs(60))
+        .timeout_connect(Duration::from_secs(10))
+        .user_agent("pb2-launcher/1.0")
+        .build())
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ManifestFile {
@@ -219,11 +239,7 @@ pub fn sync_game(
     state_file: &Path,
     progress: Progress,
 ) -> Result<SyncResult, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(60))
-        .timeout_connect(Duration::from_secs(10))
-        .user_agent("pb2-launcher/1.0")
-        .build();
+    let agent = build_agent()?;
 
     let manifest = fetch_manifest(server, &agent)?;
     fs::create_dir_all(target_dir).map_err(|e| format!("create folder: {e}"))?;
@@ -340,3 +356,4 @@ pub fn sync_game(
     result.bytes = bytes;
     Ok(result)
 }
+

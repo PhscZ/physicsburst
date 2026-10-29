@@ -1,7 +1,8 @@
 //! Tauri shell for the Physics Burst HTML5 build.
 //!
 //! Startup:
-//!   1. read config.json (or PB2_SERVER) for the game server address
+//!   1. read config.json (or PB2_SERVER) for the game server address; a bare
+//!      host means https, since the public server sits behind a TLS edge
 //!   2. sync the game files into <app data>/game (only changed files are fetched)
 //!   3. serve that folder over http://localhost:47821 (fixed port, see
 //!      `GAME_PORT` — the origin keys the game's saved name and settings)
@@ -58,20 +59,40 @@ fn read_config() -> Config {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         })
-        .unwrap_or_else(|| "http://localhost:2053".to_string());
-    let server = server.trim().trim_end_matches('/').to_string();
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string());
+    let server = normalize_server(&server);
 
     // The account service is a separate process on port 2054 of the same host.
     // `"accounts": false` disables sign-in, which leaves guest play working.
     let accounts = match cfg.get("accounts") {
         Some(serde_json::Value::Bool(false)) => String::new(),
-        Some(serde_json::Value::String(s)) if !s.is_empty() => {
-            s.trim().trim_end_matches('/').to_string()
-        }
+        Some(serde_json::Value::String(s)) if !s.is_empty() => normalize_server(s),
         _ => derive_accounts_url(&server),
     };
 
     Config { server, accounts }
+}
+
+/// Only reached when no `config.json` sits beside the executable: the local
+/// dev server, which speaks plain HTTP. A distributed launcher always ships a
+/// `config.json`, and that one names the public server.
+const DEFAULT_SERVER: &str = "http://localhost:2053";
+
+/// Trim a configured address, drop trailing slashes and supply a scheme.
+///
+/// A bare host means the public server, which is published behind a TLS edge,
+/// so it becomes `https://`. An explicit `http://` is left alone: that is how
+/// the local dev server and a LAN host are addressed, and an edge that only
+/// answers https still lifts them with a redirect.
+fn normalize_server(raw: &str) -> String {
+    let s = raw.trim().trim_end_matches('/');
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.contains("://") {
+        return s.to_string();
+    }
+    format!("https://{}", s.trim_start_matches("//"))
 }
 
 fn derive_accounts_url(server: &str) -> String {
@@ -460,6 +481,12 @@ fn main() {
             // inline patch in index.html assigns to these in sloppy mode, and
             // an assignment to a non-writable property is a silent no-op, so
             // these values win.
+            //
+            // The scheme travels with the value: the client maps `https://` to
+            // `wss://` and `http://` to `ws://` when it opens the socket
+            // (`connection.js`), so an https server here is what gets the game
+            // onto TLS. Both are pinned as configured — a bare host was already
+            // turned into https by `normalize_server`.
             // F11 is handled here rather than by the page: a browser does this
             // itself, but the launcher's WebView2 window has no browser chrome,
             // so nothing would intercept the key and it would do nothing.
@@ -540,4 +567,42 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_server;
+
+    #[test]
+    fn bare_host_becomes_https() {
+        assert_eq!(
+            normalize_server("game.example.com"),
+            "https://game.example.com"
+        );
+        assert_eq!(
+            normalize_server(" game.example.com/ "),
+            "https://game.example.com"
+        );
+        assert_eq!(
+            normalize_server("//game.example.com"),
+            "https://game.example.com"
+        );
+    }
+
+    #[test]
+    fn explicit_scheme_is_kept() {
+        assert_eq!(
+            normalize_server("https://game.example.com/"),
+            "https://game.example.com"
+        );
+        assert_eq!(
+            normalize_server("http://localhost:2053/"),
+            "http://localhost:2053"
+        );
+    }
+
+    #[test]
+    fn blank_stays_blank() {
+        assert_eq!(normalize_server("   "), "");
+    }
 }
