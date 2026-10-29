@@ -1,0 +1,48 @@
+[package]
+name = "pb2-launcher"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Desktop launcher for the Physics Burst HTML5 game"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `compression` is dropped: it exists to brotli-compress the embedded frontend
+# assets, which here is a single small loading screen. Dropping it removes the
+# brotli codec from the binary.
+tauri = { version = "2", default-features = false, features = [
+    "wry",
+    "common-controls-v6",
+    "dynamic-acl",
+    "x11",
+    "dbus",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+# `ureq` instead of `reqwest`: reqwest's blocking client drags in tokio, hyper,
+# h2, rustls and ring even when only a handful of GETs are ever issued. ureq is
+# a plain blocking HTTP client, and `native-tls` uses the platform TLS stack
+# (SChannel on Windows, Security.framework on macOS, OpenSSL on Linux) instead
+# of bundling a second crypto library.
+#
+# Default features are off: `tls` would pull in rustls + ring alongside
+# native-tls, and `gzip` pulls in flate2 — none of which this client needs,
+# since the server sends the manifest and map files uncompressed.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+
+tiny_http = "0.12"
+walkdir = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+# "z" over "s": optimise for size rather than speed. The only hot loop is a
+# file copy and a SHA-256, so the difference is not measurable in use.
+opt-level = "z"
+panic = "abort"
+strip = true

@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "game-window",
+  "description": "Lets the game page, which is served from a loopback HTTP origin, toggle window fullscreen (F11) and close the window (EXIT GAME).",
+  "windows": ["main"],
+  "local": true,
+  "remote": {
+    "urls": ["http://localhost:*"]
+  },
+  "permissions": [
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-close"
+  ]
+}
