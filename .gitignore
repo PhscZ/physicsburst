@@ -1,5 +1,5 @@
 src-tauri/target/
 src-tauri/gen/schemas/
 # build outputs, published as releases instead
-/pb2-launcher.exe
+/pb.exe
 /WebView2Loader.dll

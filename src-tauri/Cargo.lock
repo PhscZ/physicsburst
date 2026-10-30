@@ -2212,7 +2212,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pb2-launcher"
+name = "pb"
 version = "1.0.0"
 dependencies = [
  "serde",

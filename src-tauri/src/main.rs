@@ -37,30 +37,17 @@ struct Config {
 fn read_config() -> Config {
     // config.json sits next to the executable, so an operator can edit it
     // without rebuilding. PB2_SERVER wins when set (handy for testing).
-    let mut cfg: serde_json::Value = serde_json::Value::Null;
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for candidate in [dir.join("config.json"), dir.join("..").join("config.json")] {
-                if let Ok(raw) = fs::read_to_string(&candidate) {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
-                        cfg = parsed;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    let server = std::env::var("PB2_SERVER")
+    let cfg = std::env::current_exe()
         .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            cfg.get("server")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| DEFAULT_SERVER.to_string());
-    let server = normalize_server(&server);
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .map(|dir| load_config(&dir))
+        .unwrap_or(serde_json::Value::Null);
+
+    let env_override = std::env::var("PB2_SERVER").ok();
+    let server = resolve_server(
+        env_override.as_deref(),
+        cfg.get("server").and_then(|v| v.as_str()),
+    );
 
     // The account service is a separate process on port 2054 of the same host.
     // `"accounts": false` disables sign-in, which leaves guest play working.
@@ -73,10 +60,40 @@ fn read_config() -> Config {
     Config { server, accounts }
 }
 
-/// Only reached when no `config.json` sits beside the executable: the local
-/// dev server, which speaks plain HTTP. A distributed launcher always ships a
-/// `config.json`, and that one names the public server.
-const DEFAULT_SERVER: &str = "http://localhost:2053";
+/// Read `config.json` from the launcher's own folder — and only from there.
+///
+/// A config one folder up is deliberately not consulted. A launcher unpacked
+/// into a subfolder of an older extraction would otherwise pick up that
+/// folder's `config.json` and silently follow whatever server it names, which
+/// is how a player ends up chasing `localhost` from a folder that has no
+/// config in it at all. Anything unreadable or malformed counts as absent, so
+/// the built-in server is used instead of a half-parsed file.
+fn load_config(dir: &Path) -> serde_json::Value {
+    fs::read_to_string(dir.join("config.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Where the launcher goes when nothing says otherwise: the public server.
+///
+/// This is the value that ships, so a copy of the exe without a `config.json`
+/// beside it still points at the real server. It must never name a loopback
+/// address — that is what a launcher on a player's machine would then try to
+/// reach, and the multiplayer client would follow it there. A local dev server
+/// is opted into through `config.json` or `PB2_SERVER`, not by default.
+const DEFAULT_SERVER: &str = "https://physicsburst.ddns.net";
+
+/// Pick the server address: `PB2_SERVER`, then `config.json`, then the
+/// built-in public server. A blank value at either level counts as absent, so
+/// a half-written config cannot leave the launcher pointing nowhere.
+fn resolve_server(env_override: Option<&str>, configured: Option<&str>) -> String {
+    let raw = env_override
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| configured.filter(|s| !s.trim().is_empty()))
+        .unwrap_or(DEFAULT_SERVER);
+    normalize_server(raw)
+}
 
 /// Trim a configured address, drop trailing slashes and supply a scheme.
 ///
@@ -95,9 +112,13 @@ fn normalize_server(raw: &str) -> String {
     format!("https://{}", s.trim_start_matches("//"))
 }
 
+/// The account service runs on port 2054 of the game server's host, speaking
+/// plain HTTP — it is not behind the TLS edge, and the edge itself only serves
+/// the game's static files (`/api/*` there answers 404). So the derived URL is
+/// always `http://`, whatever scheme the game files are fetched over.
 fn derive_accounts_url(server: &str) -> String {
-    let (scheme, rest) = match server.split_once("://") {
-        Some(parts) => parts,
+    let rest = match server.split_once("://") {
+        Some((_, rest)) => rest,
         None => return String::new(),
     };
     let host = rest.split('/').next().unwrap_or("");
@@ -105,7 +126,7 @@ fn derive_accounts_url(server: &str) -> String {
     if hostname.is_empty() {
         return String::new();
     }
-    format!("{scheme}://{hostname}:2054")
+    format!("http://{hostname}:2054")
 }
 
 // ---- Local static server -------------------------------------------------
@@ -571,7 +592,67 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_server;
+    use super::{
+        derive_accounts_url, load_config, normalize_server, resolve_server, DEFAULT_SERVER,
+    };
+    use std::fs;
+
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("pb-config-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn config_beside_the_launcher_is_read() {
+        let dir = scratch_dir("beside");
+        fs::write(
+            dir.join("config.json"),
+            r#"{"server":"http://localhost:2053"}"#,
+        )
+        .unwrap();
+        assert_eq!(load_config(&dir)["server"], "http://localhost:2053");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn config_in_the_folder_above_is_ignored() {
+        let root = scratch_dir("parent");
+        let dir = root.join("pb");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            root.join("config.json"),
+            r#"{"server":"http://localhost:2053"}"#,
+        )
+        .unwrap();
+        assert!(load_config(&dir).get("server").is_none());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_or_malformed_config_counts_as_absent() {
+        let dir = scratch_dir("broken");
+        assert_eq!(load_config(&dir), serde_json::Value::Null);
+        fs::write(dir.join("config.json"), "{not json").unwrap();
+        assert_eq!(load_config(&dir), serde_json::Value::Null);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn missing_config_points_at_the_public_server() {
+        assert_eq!(resolve_server(None, None), DEFAULT_SERVER);
+        assert_eq!(resolve_server(Some("  "), Some("")), DEFAULT_SERVER);
+        assert_eq!(resolve_server(Some(""), None), DEFAULT_SERVER);
+    }
+
+    #[test]
+    fn default_server_is_the_public_https_host() {
+        assert_eq!(DEFAULT_SERVER, "https://physicsburst.ddns.net");
+        // A loopback default is what a player's copy would then chase.
+        assert!(!DEFAULT_SERVER.contains("localhost"));
+        assert!(!DEFAULT_SERVER.contains("127.0.0.1"));
+    }
 
     #[test]
     fn bare_host_becomes_https() {
@@ -604,5 +685,30 @@ mod tests {
     #[test]
     fn blank_stays_blank() {
         assert_eq!(normalize_server("   "), "");
+    }
+
+    #[test]
+    fn env_override_wins_over_config() {
+        assert_eq!(
+            resolve_server(Some("http://localhost:2053"), Some("https://game.example.com")),
+            "http://localhost:2053"
+        );
+        assert_eq!(
+            resolve_server(None, Some("physicsburst.ddns.net")),
+            "https://physicsburst.ddns.net"
+        );
+    }
+
+    #[test]
+    fn accounts_derive_over_plain_http_on_2054() {
+        assert_eq!(
+            derive_accounts_url("https://physicsburst.ddns.net"),
+            "http://physicsburst.ddns.net:2054"
+        );
+        assert_eq!(
+            derive_accounts_url("http://localhost:2053"),
+            "http://localhost:2054"
+        );
+        assert_eq!(derive_accounts_url("game.example.com"), "");
     }
 }

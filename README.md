@@ -15,9 +15,15 @@ Chromium.
 cargo build --release --manifest-path src-tauri/Cargo.toml
 ```
 
-The binary lands in `src-tauri/target/release/pb2-launcher`. Copy
+The binary lands in `src-tauri/target/release/pb`. Copy
 `config.json` next to it, and — for a GNU build — `WebView2Loader.dll` as well;
 the exe, the config and the DLL are the whole distribution.
+
+`config.json` is optional: without it the launcher uses the server compiled in
+(`https://physicsburst.ddns.net`), so a bare exe still reaches the public
+server. Put a `config.json` beside it only to point somewhere else — a local
+dev server, say. `PB2_SERVER` overrides both. Only the copy in the exe's own
+folder counts; one in a parent folder is ignored.
 
 `WebView2Loader.dll` is not optional. It is a hard import of the executable,
 not a delay-load: without it in the executable's own directory the process
