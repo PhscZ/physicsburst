@@ -2,7 +2,10 @@
 name = "pb"
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.77"
+# Tauri 2.12 (and the rest of the locked graph) needs 1.90; the old 1.77 here
+# was only ever what this crate's own code needs, and it made `cargo` refuse to
+# build under a toolchain that satisfies the dependencies.
+rust-version = "1.90"
 description = "Desktop launcher for the Physics Burst HTML5 game"
 publish = false
 
